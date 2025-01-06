@@ -1,56 +1,163 @@
+import hashlib
 import streamlit as st
-from openai import OpenAI
-
-# Show title and description.
-st.title("💬 Chatbot")
-st.write(
-    "This is a simple chatbot that uses OpenAI's GPT-3.5 model to generate responses. "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-    "You can also learn how to build this app step by step by [following our tutorial](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps)."
+from cryptography.hazmat.primitives.asymmetric import rsa, ec
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives import hashes
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    PrivateFormat,
+    PublicFormat,
+    NoEncryption,
 )
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+class SignatureVerifier:
+    def __init__(self):
+        self.algorithms = {}
+        self.register_algorithms()
 
-    # Create a session state variable to store the chat messages. This ensures that the
-    # messages persist across reruns.
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    def register_algorithms(self):
+        """Register supported algorithms."""
+        self.algorithms = {
+            "RSA": {"generate": self._generate_rsa_keys, "sign": self._rsa_sign, "verify": self._rsa_verify},
+            "ECDSA": {"generate": self._generate_ecdsa_keys, "sign": self._ecdsa_sign, "verify": self._ecdsa_verify},
+            "EdDSA": {"generate": self._generate_eddsa_keys, "sign": self._eddsa_sign, "verify": self._eddsa_verify},
+        }
 
-    # Display the existing chat messages via `st.chat_message`.
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    # RSA Implementation
+    def _generate_rsa_keys(self):
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        public_key = private_key.public_key()
+        return private_key, public_key
 
-    # Create a chat input field to allow the user to enter a message. This will display
-    # automatically at the bottom of the page.
-    if prompt := st.chat_input("What is up?"):
-
-        # Store and display the current prompt.
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        # Generate a response using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ],
-            stream=True,
+    def _rsa_sign(self, message, private_key):
+        return private_key.sign(
+            message,
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
+            hashes.SHA256(),
         )
 
-        # Stream the response to the chat using `st.write_stream`, then store it in 
-        # session state.
-        with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+    def _rsa_verify(self, message, signature, public_key):
+        try:
+            public_key.verify(
+                signature,
+                message,
+                padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
+                hashes.SHA256(),
+            )
+            return True
+        except InvalidSignature:
+            return False
+
+    # ECDSA Implementation
+    def _generate_ecdsa_keys(self):
+        private_key = ec.generate_private_key(ec.SECP256R1())
+        public_key = private_key.public_key()
+        return private_key, public_key
+
+    def _ecdsa_sign(self, message, private_key):
+        return private_key.sign(message, ec.ECDSA(hashes.SHA256()))
+
+    def _ecdsa_verify(self, message, signature, public_key):
+        try:
+            public_key.verify(signature, message, ec.ECDSA(hashes.SHA256()))
+            return True
+        except InvalidSignature:
+            return False
+
+    # EdDSA Implementation
+    def _generate_eddsa_keys(self):
+        private_key = Ed25519PrivateKey.generate()
+        public_key = private_key.public_key()
+        return private_key, public_key
+
+    def _eddsa_sign(self, message, private_key):
+        return private_key.sign(message)
+
+    def _eddsa_verify(self, message, signature, public_key):
+        try:
+            public_key.verify(signature, message)
+            return True
+        except InvalidSignature:
+            return False
+
+    # Unified Interface
+    def generate_keys(self, algorithm):
+        if algorithm not in self.algorithms:
+            raise ValueError(f"Unsupported algorithm: {algorithm}")
+        return self.algorithms[algorithm]["generate"]()
+
+    def sign_message(self, algorithm, message, private_key):
+        if algorithm not in self.algorithms:
+            raise ValueError(f"Unsupported algorithm: {algorithm}")
+        return self.algorithms[algorithm]["sign"](message, private_key)
+
+    def verify_signature(self, algorithm, message, signature, public_key):
+        if algorithm not in self.algorithms:
+            raise ValueError(f"Unsupported algorithm: {algorithm}")
+        return self.algorithms[algorithm]["verify"](message, signature, public_key)
+
+
+# Streamlit GUI Implementation
+st.title("Digital Signature Verifier")
+st.sidebar.title("Options")
+verifier = SignatureVerifier()
+
+# Initialize session state for keys and signature
+if "private_key" not in st.session_state:
+    st.session_state.private_key = None
+if "public_key" not in st.session_state:
+    st.session_state.public_key = None
+if "signature" not in st.session_state:
+    st.session_state.signature = None
+
+# Select Algorithm
+algorithm = st.sidebar.selectbox("Choose Algorithm", list(verifier.algorithms.keys()))
+
+# Key Generation
+st.header("Key Generation")
+if st.button("Generate Keys"):
+    private_key, public_key = verifier.generate_keys(algorithm)
+    st.session_state.private_key = private_key
+    st.session_state.public_key = public_key
+    st.success("Keys Generated Successfully!")
+    st.text("Private Key:")
+    st.text(private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode())
+    st.text("Public Key:")
+    st.text(public_key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode())
+
+# Signing
+st.header("Sign Message")
+message = st.text_area("Enter Message to Sign", "")
+if st.button("Sign Message"):
+    if st.session_state.private_key is None:
+        st.error("Please generate keys first.")
+    elif not message:
+        st.error("Please enter a message to sign.")
+    else:
+        signature = verifier.sign_message(algorithm, message.encode(), st.session_state.private_key)
+        st.session_state.signature = signature
+        st.success("Message Signed Successfully!")
+        st.text("Signature:")
+        st.text(signature.hex())
+
+# Verification
+st.header("Verify Signature")
+input_signature = st.text_area("Enter Signature (Hex)", "")
+if st.button("Verify Signature"):
+    if st.session_state.public_key is None:
+        st.error("Please generate keys first.")
+    elif not input_signature:
+        st.error("Please provide a signature to verify.")
+    else:
+        try:
+            signature_bytes = bytes.fromhex(input_signature)
+            is_valid = verifier.verify_signature(algorithm, message.encode(), signature_bytes, st.session_state.public_key)
+            if is_valid:
+                st.success("Signature Verified: Valid")
+            else:
+                st.error("Signature Verified: Invalid")
+        except ValueError:
+            st.error("Invalid signature format. Please enter a valid hex string.")
