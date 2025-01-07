@@ -25,7 +25,7 @@ You can try it out at : [Link](https://signatureverifier.streamlit.app/)
 
 ### **1. Clone the Repository**
 ```bash
-git clone https://github.com/your-username/SignatureVerifier.git
+git clone https://github.com/RohanSai22/SignatureVerifier
 cd SignatureVerifier
 ```
 
